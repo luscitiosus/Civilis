@@ -105,12 +105,116 @@ const TOMO = {
 TOMO.articulos = goyena.indexarTomo(TOMO.paginas, TOMO);
 
 test("índice de artículos del Proyecto con OCR defectuoso", () => {
-    assert.deepEqual(TOMO.articulos.map((a) => a.n), [1900, 1902, 1903]);
+    // «ARTICLLO 1x01.» cae en el hueco 1900 → 1902: se numera 1901 por la secuencia.
+    // «ARTICULO 1450.» está fuera de orden y no hay hueco entre 1902 y 1903: se ignora.
+    assert.deepEqual(TOMO.articulos.map((a) => a.n), [1900, 1901, 1902, 1903]);
+    assert.equal(TOMO.articulos[1].inferido, true);
+    assert.equal(TOMO.articulos[1].leido, "ARTICLLO 1x01.");
+    assert.equal(TOMO.articulos[0].inferido, undefined);
     const { texto, paginas } = goyena.textoArticulo(TOMO, 0);
     assert.match(texto, /^ARTICULO 1900\./);
-    assert.match(texto, /comentario que sigue/);
-    assert.doesNotMatch(texto, /ARTICULO 1902/);
+    assert.doesNotMatch(texto, /ARTICLLO 1x01/);
     assert.deepEqual(paginas, { desde: 1, hasta: 2 });
+});
+
+test("cabeceras: número ilegible, ordinales y falsos positivos", () => {
+    assert.deepEqual(goyena.leerCabecera("ARTICULO lí). "), { ilegible: true, leido: "ARTICULO lí)." });
+    assert.deepEqual(goyena.leerCabecera("ARTICLLO 5bl."), { ilegible: true, leido: "ARTICLLO 5bl." });
+    assert.deepEqual(goyena.leerCabecera("AUTICULO 21. "), { n: 21 });
+    assert.deepEqual(goyena.leerCabecera("ARTÍCULO PRIMERO."), { n: 1 });
+    assert.equal(goyena.leerCabecera("ARTICULO ADICIONAL."), null);
+    assert.equal(goyena.leerCabecera("ARTICULOS 18 y 21 del Código francés"), null);
+    assert.equal(goyena.leerCabecera("Artículo 12."), null);
+    assert.deepEqual(goyena.leerCabecera("ARTICULO 19. La calidad de español se pierde"), { n: 19 });
+});
+
+// Réplica del tomo 1 tal como sale del OCR real (arts. 18–21, cabecera del 19 ilegible).
+const TOMO1 = {
+    tomo: 1,
+    ident: "BRes0414951",
+    desde: 1,
+    hasta: 547,
+    paginas: [
+        "PRÓLOGO\nTexto preliminar del autor sobre el Proyecto.",
+        "TITULO PRELIMINAR\nARTICULO !.\nLas leyes obligan en la Península e islas adyacentes en virtud de su promulgación.\nComentario al primero.\nARTICULO 2.\nTexto del segundo.",
+        "30 CONCORDANCIAS, MOTIVOS Y COMENTARIOS.\nARTICULO 18.\nSon españoles: Todas las personas nacidas en los dominios de España.\nComentario: Cum legitimae nuptiae factae sint, patrem liberi sequuntur.",
+        // El OCR real del art. 19 se corta en «…de otro Gobierno sin»; el final es de prueba.
+        "DEL CÓDIGO CIVIL ESPAÑOL. • 51\ncontinúa el comentario al 18.\nARTICULO lí).\nLa calidad de español se pierde, por adquirir naturaleza en país estranjero y por admitir empleo de otro Gobierno sin licencia del Rey, ó entrar al servicio de las armas de una potencia estranjera.",
+        "32 CONCORDANCIAS, MOTIVOS Y COMENTARIOS.\nARTÍCULO 20.\nEl español que hubiere perdido esta calidad por adquirir naturaleza en pais estranjero, podrá recobrarla volviendo al reino.",
+        "DEL CÓDIGO CIVIL ESPAÑOL. 33\nAUTICULO 21.\nEl español que hubiere perdido esta calidad por admitir empleo de otro Gobierno, ó entrar al servicio de las armas de una potencia estranjera sin licencia del Rey, no podrá recobrarla sin obtener previamente la Real habilitación.",
+    ],
+};
+TOMO1.etiquetas = goyena.etiquetasImpresas(TOMO1.paginas);
+TOMO1.articulos = goyena.indexarTomo(TOMO1.paginas, TOMO1);
+
+test("tomo 1: se recuperan el art. 1 y el art. 19 por la secuencia", async () => {
+    assert.deepEqual(TOMO1.articulos.map((a) => a.n), [1, 2, 18, 19, 20, 21]);
+    assert.deepEqual(TOMO1.articulos.filter((a) => a.inferido).map((a) => a.n), [1, 19]);
+    goyena._setTomos([TOMO1]);
+    goyena._resetIndice();
+    const uno = await goyena.articuloProyecto(1);
+    assert.equal(uno.exacto, true);
+    assert.equal(uno.inferido, true);
+    // El art. 20 del CC de 1889 (pérdida de la nacionalidad) corresponde al 19 del Proyecto.
+    const c = await goyena.candidatosParaTexto(
+        "Artículo 20.\nLa calidad de español se pierde por adquirir naturaleza en país extranjero, o por admitir empleo de otro Gobierno, o entrar al servicio de las armas de una potencia extranjera sin licencia del Rey.",
+    );
+    assert.equal(c[0].n, 19);
+    assert.equal(c[0].inferido, true);
+    assert.match(c[0].url, /BRes0414951\/page\/n3\/mode/); // 4.ª hoja → n3
+    assert.match(c[0].paginaTexto, /págs\. 4–5 del escaneo \(impresas 31–32\)/);
+});
+
+test("tomo sin cabecera para los primeros artículos: se muestra el texto previo", async () => {
+    const t = {
+        tomo: 1,
+        ident: "X",
+        desde: 1,
+        hasta: 547,
+        paginas: ["PRÓLOGO", "Las leyes obligan en la Península.\nARTICULO 5.\nTexto del quinto.", "ARTICULO 6.\nTexto del sexto."],
+    };
+    t.articulos = goyena.indexarTomo(t.paginas, t);
+    assert.deepEqual(t.articulos.map((a) => a.n), [5, 6]);
+    goyena._setTomos([t]);
+    const r = await goyena.articuloProyecto(1);
+    assert.equal(r.antesDe, 5);
+    const { texto, paginas } = goyena.textoAntesDelPrimero(t, 2000);
+    assert.match(texto, /Las leyes obligan/);
+    assert.doesNotMatch(texto, /ARTICULO 5/);
+    assert.equal(paginas.hasta, 2);
+});
+
+test("paginación: hOCR (caracteres o bytes), djvu.xml y cabeceras impresas", () => {
+    const txt = "Página uno ñ\nPágina dos\n";
+    const buf = Buffer.from(txt, "utf-8");
+    // Desplazamientos en caracteres
+    assert.deepEqual(goyena.paginasDesdeHocr(buf, [[0, 13], [13, 24]]), ["Página uno ñ\n", "Página dos\n"]);
+    // Desplazamientos en bytes («á» y «ñ» ocupan dos)
+    const b1 = Buffer.byteLength("Página uno ñ\n");
+    assert.deepEqual(goyena.paginasDesdeHocr(buf, [[0, b1], [b1, buf.length]]), ["Página uno ñ\n", "Página dos\n"]);
+
+    const xml =
+        '<?xml version="1.0"?><DjVuXML><BODY>' +
+        '<OBJECT data="a"><HIDDENTEXT><PAGECOLUMN><REGION><PARAGRAPH><LINE><WORD coords="1">ARTICULO</WORD><WORD coords="2">20.</WORD></LINE>' +
+        '<LINE><WORD coords="3">El</WORD><WORD coords="4">espa&#241;ol</WORD><WORD>&amp;c.</WORD></LINE></PARAGRAPH></REGION></PAGECOLUMN></HIDDENTEXT></OBJECT>' +
+        '<OBJECT data="b"><HIDDENTEXT><LINE><WORD>Segunda</WORD></LINE></HIDDENTEXT></OBJECT></BODY></DjVuXML>';
+    const px = goyena.paginasDesdeDjvuXml(xml);
+    assert.equal(px.length, 2);
+    assert.equal(px[0].split("\n")[0], "ARTICULO 20.");
+    assert.match(px[0], /El español &c\./);
+    assert.match(px[1], /Segunda/);
+
+    const sinFf = "Fin del prólogo.\n30 CONCORDANCIAS, MOTIVOS Y COMENTARIOS.\nuno\nDEL CÓDIGO CIVIL ESPAÑOL. • 51\ndos\n32. CONCORnANCIAS , MOTIVOS Y COMENTARIOS\ntres";
+    const pc = goyena.paginasPorCabeceras(sinFf);
+    assert.equal(pc.length, 4);
+    // «• 51» es un 31 mal leído: no concuerda con sus vecinas y se deduce por la secuencia.
+    assert.deepEqual(goyena.etiquetasImpresas(pc), [29, 30, 31, 32]);
+    const t = { ident: "Y", paginacion: "impresas", etiquetas: [29, 30, 31, 32] };
+    assert.equal(goyena.urlPagina(t, 3), "https://archive.org/details/Y/page/31/mode/1up");
+    assert.equal(goyena.describirPaginas(t, 2, 3), "págs. impresas 30–31");
+    assert.equal(goyena.describirPaginas(t, 3, 3), "pág. impresa 31");
+    assert.equal(goyena.describirPaginas({ etiquetas: [7] }, 1, 1), "pág. 1 del escaneo (impresa 7)");
+    assert.equal(goyena.urlPagina("Y", 3), "https://archive.org/details/Y/page/n2/mode/1up");
 });
 
 test("semejanza textual entre el art. 1902 CC y el Proyecto", async () => {
@@ -120,13 +224,18 @@ test("semejanza textual entre el art. 1902 CC y el Proyecto", async () => {
         "Artículo 1902.\nEl que por acción u omisión causa daño a otro, interviniendo culpa o negligencia, está obligado a reparar el daño causado.",
     );
     assert.equal(c[0].n, 1900);
-    assert.ok(c[0].puntuacion > 0.4);
+    // La ventana ya no se mezcla con el art. 1901 (antes inflaba la cifra a 0,41).
+    assert.ok(c[0].puntuacion > 0.3);
     const r = await goyena.buscar("ley aquilia");
     assert.equal(r.total, 1);
     assert.equal(r.resultados[0].articulo, 1900);
-    const ilegible = await goyena.articuloProyecto(1901);
+    const deducido = await goyena.articuloProyecto(1901);
+    assert.equal(deducido.exacto, true);
+    assert.equal(deducido.inferido, true);
+    // Sin cabecera en el OCR (1904 en adelante): se da el tramo del último reconocido.
+    const ilegible = await goyena.articuloProyecto(1950);
     assert.equal(ilegible.exacto, false);
-    assert.equal(ilegible.tomo.articulos[ilegible.idx].n, 1900);
+    assert.equal(ilegible.tomo.articulos[ilegible.idx].n, 1903);
 });
 
 test("concordancias: datos, búsqueda directa e inversa", () => {

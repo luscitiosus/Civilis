@@ -285,7 +285,12 @@ export function createServer() {
             return (
                 "GARCÍA GOYENA — artículos del Proyecto de 1851 más parecidos a la redacción de 1889 (semejanza léxica; compruébalo en el escaneo):\n" +
                 cands
-                    .map((x) => `  – Proyecto art. ${x.n} (T. ${x.tomo}, págs. ${x.paginas.desde}–${x.paginas.hasta}) · semejanza ${x.puntuacion}${x.puntuacion >= 0.5 ? " · probable" : x.puntuacion < 0.25 ? " · dudosa" : ""} · ${goyena.urlPagina(x.ident, x.paginas.desde)}`)
+                    .map(
+                        (x) =>
+                            `  – Proyecto art. ${x.n}${x.inferido ? " (número deducido: cabecera ilegible)" : ""} (T. ${x.tomo}, ${x.paginaTexto}) · semejanza ${x.puntuacion}` +
+                            `${x.puntuacion >= 0.5 ? " · probable" : x.puntuacion < 0.25 ? " · dudosa" : ""} · ${x.url}` +
+                            (x.tramoHasta ? `\n    (su tramo incluye también ${x.tramoHasta === x.n + 1 ? `el art. ${x.tramoHasta}` : `los arts. ${x.n + 1}–${x.tramoHasta}`}, de cabecera ilegible)` : ""),
+                    )
                     .join("\n") +
                 "\n  Lee el comentario con goyena_articulo."
             );
@@ -303,16 +308,24 @@ export function createServer() {
             inputSchema: { numero: z.number().int().min(1).max(1992), max_caracteres: z.number().int().min(1000).max(40000).default(12000) },
         },
         safe(async ({ numero, max_caracteres }) => {
-            const { tomo, idx, exacto } = await goyena.articuloProyecto(numero);
-            const { texto, paginas } = goyena.textoArticulo(tomo, idx, max_caracteres);
+            const { tomo, idx, exacto, inferido, antesDe } = await goyena.articuloProyecto(numero);
+            const { texto, paginas } = idx >= 0 ? goyena.textoArticulo(tomo, idx, max_caracteres) : goyena.textoAntesDelPrimero(tomo, max_caracteres);
             const a = tomo.articulos[idx];
+            const anterior = tomo.articulos[idx - 1]?.n;
+            const posterior = tomo.articulos[idx + 1]?.n;
+            let cabecera;
+            if (antesDe != null)
+                cabecera = `AVISO: no se ha reconocido la cabecera del art. ${numero}; el primer artículo reconocido del tomo es el ${antesDe}. Se muestra el texto que lo precede, donde debería estar el art. ${numero}: compruébalo en el escaneo.`;
+            else if (!exacto)
+                cabecera = `AVISO: la cabecera del art. ${numero} es ilegible en el OCR; se muestra desde el art. ${a.n}, cuyo tramo la contiene. Busca «${numero}» en el texto.`;
+            else if (inferido)
+                cabecera = `PROYECTO DE 1851: art. ${numero} — NÚMERO DEDUCIDO: el OCR lee «${a.leido}»; se le asigna el ${numero} por la secuencia (${anterior ?? "inicio del tomo"} → ${posterior ?? "fin del tomo"}). Compruébalo en el escaneo.`;
+            else cabecera = `PROYECTO DE 1851: art. ${numero}`;
             return [
                 "FUENTE: F. García Goyena, Concordancias, motivos y comentarios del Código civil español, Madrid, 1852 (ejemplar de la Universidad de Sevilla en archive.org; dominio público).",
-                `TOMO: ${tomo.tomo} (${tomo.ident}) · PÁGINAS DEL ESCANEO: ${paginas.desde}–${paginas.hasta}`,
-                `ESCANEO: ${goyena.urlPagina(tomo.ident, paginas.desde)}`,
-                exacto
-                    ? `PROYECTO DE 1851: art. ${numero}`
-                    : `AVISO: la cabecera del art. ${numero} es ilegible en el OCR; se muestra desde el art. ${a.n}, cuyo tramo la contiene. Busca «${numero}» en el texto.`,
+                `TOMO: ${tomo.tomo} (${tomo.ident}) · PÁGINAS: ${goyena.describirPaginas(tomo, paginas.desde, paginas.hasta)}`,
+                `ESCANEO: ${goyena.urlPagina(tomo, paginas.desde)}`,
+                cabecera,
                 "TEXTO OCR (puede contener errores de lectura; compruébalo en el escaneo antes de citar):",
                 "────────────────────────────────────────",
                 texto,
@@ -334,7 +347,7 @@ export function createServer() {
             return (
                 `${total} páginas contienen «${consulta}»${total > resultados.length ? ` (se muestran ${resultados.length})` : ""}:\n\n` +
                 resultados
-                    .map((r) => `• T. ${r.tomo}, pág. ${r.pagina}${r.articulo ? ` · comentario al art. ${r.articulo} del Proyecto` : ""}\n  …${r.fragmento}…\n  ${goyena.urlPagina(r.ident, r.pagina)}`)
+                    .map((r) => `• T. ${r.tomo}, ${r.paginaTexto}${r.articulo ? ` · comentario al art. ${r.articulo} del Proyecto` : ""}\n  …${r.fragmento}…\n  ${r.url}`)
                     .join("\n\n")
             );
         }),
