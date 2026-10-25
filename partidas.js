@@ -322,7 +322,7 @@ export async function ley(p, t, l, maxChars = 8000) {
     };
 }
 
-const norm = (s) => sinAcentos(s).toLowerCase();
+const norm = (s) => sinAcentos(s).toLowerCase().replace(/(\p{Ll})[-¬] (\p{Ll})/gu, "$1$2");
 
 /** Búsqueda por palabras; cada resultado dice en qué ley cae. */
 export async function buscar(consulta, { partida, limite = 10 } = {}) {

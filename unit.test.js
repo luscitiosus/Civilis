@@ -256,3 +256,28 @@ test("concordancias: datos, búsqueda directa e inversa", () => {
     assert.equal(conc.porFuente("D. 9.20").length, 0);
     assert.ok(conc.porTexto("usufructo").some((e) => e.articulo === "467"));
 });
+
+test("semejanza: grafías de 1851 y palabras partidas por el OCR (art. 61 CC ↔ art. 63 del Proyecto)", async () => {
+    // OCR real del art. 63 del Proyecto (T. 1, págs. 77–79).
+    const t = {
+        tomo: 1,
+        ident: "BRes0414951",
+        desde: 1,
+        hasta: 547,
+        paginas: [
+            "ARTICULO 62.\nEl marido es el representante de su muger.",
+            "ARTICULO 63.\nTampoco puede la muger , sin Ucencia ó poder de su marido , ad- quirir por titulo oneroso ni lucrativo , enagenar sus bienes^ ni obli- garse.\nEsta disposición ha de entenderse sin perjuicio de lo dispuesto en el titulo 6, libro 3 de este Código.\n117 Francés, 163 Holandés y 124 de la Luisiana.",
+            "ARTICULO 64.\nLos tribunales, con conocimiento de causa, pueden suplir la falta de la licencia marital.",
+        ],
+    };
+    t.articulos = goyena.indexarTomo(t.paginas, t);
+    goyena._setTomos([t]);
+    goyena._resetIndice();
+    const [c] = await goyena.candidatosParaTexto(
+        "Artículo 61.\nTampoco puede la mujer, sin licencia o poder de su marido, adquirir por título oneroso ni lucrativo, enajenar sus bienes, ni obligarse, sino en los casos y con las limitaciones establecidas por la Ley.",
+    );
+    assert.equal(c.n, 63);
+    assert.ok(c.puntuacion >= 0.5, `semejanza ${c.puntuacion}`);
+    assert.deepEqual(goyena.palabras("la muger quiere enagenar"), ["mujer", "quiere", "enajenar"]);
+    assert.equal((await goyena.buscar("adquirir")).total, 1);
+});

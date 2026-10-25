@@ -416,7 +416,9 @@ export async function articuloProyecto(n) {
 
 // ───────────────────────── Búsqueda por palabras ─────────────────────────
 
-const norm = (s) => sinAcentos(s).toLowerCase();
+/** Une las palabras que el OCR deja partidas a mitad de línea: «ad- quirir» → «adquirir». */
+export const unirGuiones = (s) => s.replace(/(\p{Ll})[-¬] (\p{Ll})/gu, "$1$2");
+const norm = (s) => unirGuiones(sinAcentos(s).toLowerCase());
 
 export async function buscar(consulta, { tomo, limite = 10 } = {}) {
     const ts = (await tomos()).filter((t) => !tomo || t.tomo === tomo);
@@ -461,8 +463,10 @@ export function palabras(s) {
         .replace(/[^a-zñ\s]/g, " ")
         .split(/\s+/)
         .filter((w) => w.length >= 4 && !VACIAS.has(w))
-        // Ortografía de 1851 frente a la de 1889: «estranjero/extranjero», «esceptuar/exceptuar».
-        .map((w) => w.replace(/ex(?=[bcdfgjklmnpqrstvz])/g, "es"))
+        // Ortografía de 1851 frente a la de 1889: «estranjero/extranjero», «esceptuar/exceptuar»,
+        // «muger/mujer», «enagenar/enajenar». Se aplica a los dos textos, así que «gente» y «jente»
+        // también coinciden sin daño.
+        .map((w) => w.replace(/ex(?=[bcdfgjklmnpqrstvz])/g, "es").replace(/g(?=[ei])/g, "j"))
         .filter((w) => !VACIAS.has(w));
 }
 
