@@ -7,20 +7,28 @@ import * as goyena from "./goyena.js";
 import * as conc from "./concordancias.js";
 import * as citas from "./citas.js";
 import * as partidas from "./partidas.js";
+import * as brocardos from "./brocardos.js";
+import * as code1804 from "./codigo1804.js";
+import * as manresa from "./manresa.js";
 import { renderDiff } from "./diff.js";
 
 export const INSTRUCTIONS = `Concordantiae: el Código Civil español (BOE-A-1889-4763) en su historia y en sus fuentes.
 
-Tres capas:
+Capas:
 1. Historia de cada artículo desde 1889, con la norma que dio cada redacción (API oficial del BOE): cc_historia, cc_version, cc_comparar, cc_reformas.
 2. Concordancias con el derecho romano, verificadas contra los textos críticos de la Bibliotheca Iuris Antiqui: cc_concordancias, cc_fuente_romana. Para leer el pasaje completo usa el conector de fuentes romanas (citar).
 3. García Goyena, Concordancias, motivos y comentarios del Código civil español (1852), comentario al Proyecto de 1851, en OCR de archive.org: goyena_articulo, goyena_buscar, goyena_para_cc. Las fuentes que cita cada comentario (Digesto, Código, Partidas, Leyes de Toro, Fuero Juzgo, Fuero Real, Novísima) se leen en notación moderna con goyena_citas, y goyena_citado hace la búsqueda inversa hasta el Código Civil.
 4. Derecho histórico castellano: las Siete Partidas en la edición de la Real Academia de la Historia (1807), en OCR de archive.org: historico_citar, historico_buscar.
+5. El Code civil des Français de 1804 (Code Napoléon), modelo principal del Proyecto de 1851, en la transcripción de Wikisource: code_articulo, code_buscar; code_para_cc va del Código Civil al Code a través de las concordancias que da García Goyena («tomado de los 319 y 320 Franceses»).
+6. Manresa, Comentarios al Código Civil español (1890 y ss.), el comentario de los años inmediatamente posteriores a la promulgación, en OCR de archive.org (se usa el ejemplar más antiguo de cada tomo): manresa_articulo, manresa_buscar.
+7. Brocardos y reglas latinas con su lugar romano y los artículos que los recogen o se apartan de ellos: cc_brocardos.
 
 Reglas:
 - Cita el texto literal que devuelven las herramientas, con la fecha de vigencia y la URL. No completes con memoria lo que no se ha leído.
 - Las concordancias romanas son un conjunto seleccionado, no exhaustivo: si un artículo no tiene entrada, dilo y no inventes una.
 - Las citas que se extraen de García Goyena salen del OCR: un número mal leído da una cita equivocada. Compruébalas leyendo el pasaje (citar en el conector romano, historico_citar para las Partidas).
+- Las concordancias con el Code que se leen en García Goyena salen del OCR (un 320 leído como 520 da otro artículo): compara siempre el texto francés con el del Proyecto y el del Código.
+- Manresa es OCR del siglo XIX: cita el tomo, la edición y la página que da la herramienta, y comprueba en el escaneo.
 - La numeración de las Partidas es la de la edición de 1807, que puede no coincidir con la de Gregorio López (1555), la que tenía autoridad en el foro y la que probablemente sigue García Goyena: si una cita de Goyena no cuadra con el texto, puede deberse a eso.
 - El texto de García Goyena es OCR del siglo XIX con errores; la correspondencia entre artículos del Proyecto de 1851 y del Código de 1889 que ofrece goyena_para_cc es por semejanza textual y debe comprobarse en el escaneo enlazado.`;
 
@@ -250,8 +258,11 @@ export function createServer() {
                         ? es.map(conc.renderEntrada).join("\n\n")
                         : `No hay concordancias romanas registradas para el ${boe.etiqueta(boe.normalizaArticulo(articulo))}. El conjunto es selectivo (${conc.DATOS.entradas.length} artículos); no supongas que no existen. Prueba con una consulta por materia o busca en las fuentes con el conector romano.`,
                 );
+                const bs = brocardos.porArticulo(articulo);
+                if (bs.length) out.push(`BROCARDOS relacionados (cc_brocardos):\n${bs.map(brocardos.render).join("\n\n")}`);
                 if (conGoyena) out.push(await bloqueGoyena(articulo));
                 if (conGoyena || !es.length) out.push(await bloqueCitasGoyena(articulo));
+                if (conGoyena) out.push("CODE CIVIL DE 1804 y MANRESA: code_para_cc da los artículos del Code de los que Goyena dice tomar el del Proyecto; manresa_articulo, el comentario de Manresa.");
             }
             if (consulta) {
                 const es = conc.porTexto(consulta);
@@ -277,9 +288,45 @@ export function createServer() {
                     ? r.map(({ entrada, fuente }) => `art. ${entrada.articulo} CC · ${entrada.materia} — ${fuente.cita} (${entrada.relacion})`).join("\n")
                     : `Ningún artículo del conjunto de concordancias remite a ${cita}. El conjunto es selectivo; no significa que no haya relación.`,
             ];
+            const bs = brocardos.porFuente(cita);
+            if (bs.length) out.push(`BROCARDOS que proceden de ${cita}:\n${bs.map((b) => `  – ${b.brocardo} (${b.fuentes.map((f) => f.cita).join(", ")}) → ${b.articulos.map((a) => `art. ${a.articulo} CC`).join(", ")}`).join("\n")}`);
             const ref = citas.normalizaReferencia(cita);
             if (ref && citas.ROMANAS.has(ref.fuente)) out.push(await bloqueCitado(ref.ref, 15));
             return out.join("\n\n");
+        }),
+    );
+
+    server.registerTool(
+        "cc_brocardos",
+        {
+            title: "Brocardos y reglas latinas del Código Civil",
+            description:
+                'Brocardos y reglas latinas («superficies solo cedit», «pater is est quem nuptiae demonstrant», «emptio tollit locatum»…) con el lugar romano del que proceden, un extracto comprobado contra BIA, si la frase está literalmente en la fuente o es una formulación posterior, y los artículos del Código Civil que los recogen o se apartan de ellos. Busca por artículo ("358"), por palabras del brocardo o de su traducción ("solo cedit", "riesgo"), o por lugar romano ("D. 50.17"). Sin argumentos lista todos.',
+            inputSchema: {
+                articulo: articuloArg.optional(),
+                consulta: z.string().optional().describe('Palabras del brocardo o de su traducción: "pacta", "superficies", "riesgo comprador"'),
+                fuente: z.string().optional().describe('Lugar romano: "D. 50.17", "Gai. 2.73", "C. 4.65.9"'),
+            },
+        },
+        safe(async ({ articulo, consulta, fuente }) => {
+            const pie = `\n[Lugares y extractos comprobados contra BIA el ${brocardos.DATOS.verificado}. Lee el pasaje entero con citar("…") en el conector de fuentes romanas.]`;
+            if (!articulo && !consulta && !fuente) {
+                return `Brocardos registrados (${brocardos.DATOS.brocardos.length}):\n` + brocardos.DATOS.brocardos.map((b) => `  – ${b.brocardo} → ${b.articulos.map((a) => `art. ${a.articulo}`).join(", ")}`).join("\n") + pie;
+            }
+            const out = [];
+            if (articulo) {
+                const bs = brocardos.porArticulo(articulo);
+                out.push(bs.length ? bs.map(brocardos.render).join("\n\n") : `No hay brocardos registrados para el art. ${brocardos.claveArticulo(articulo)} CC. El conjunto es selectivo (${brocardos.DATOS.brocardos.length} brocardos).`);
+            }
+            if (consulta) {
+                const bs = brocardos.buscar(consulta);
+                out.push(bs.length ? bs.map(brocardos.render).join("\n\n") : `Ningún brocardo registrado coincide con «${consulta}».`);
+            }
+            if (fuente) {
+                const bs = brocardos.porFuente(fuente);
+                out.push(bs.length ? bs.map(brocardos.render).join("\n\n") : `Ningún brocardo registrado procede de ${fuente}.`);
+            }
+            return out.join("\n\n") + pie;
         }),
     );
 
@@ -572,6 +619,177 @@ export function createServer() {
                 `${total} páginas contienen «${consulta}»${partida ? ` en la Partida ${partida}` : ""}:\n\n` +
                 resultados
                     .map((r) => `• ${r.donde ? (r.donde.l ? `P. ${r.donde.p}.${r.donde.t}.${r.donde.l}` : `P. ${r.donde.p}.${r.donde.t} (antes de su primera ley)`) : `T. ${r.tomo}, antes del primer título reconocido`} · ${r.paginaTexto}\n  …${r.fragmento}…\n  ${r.url}`)
+                    .join("\n\n")
+            );
+        }),
+    );
+
+    // ───────────────────────── Code civil des Français (1804) ─────────────────────────
+
+    const CAB_CODE = () => `FUENTE: ${code1804.OBRA}; ${code1804.FUENTE}. Edición oficial escaneada: ${code1804.URL_GALLICA}`;
+
+    /** Comentarios de Goyena que citan el art. n del Code, con el artículo del CC que corresponde. */
+    async function bloqueGoyenaCode(n) {
+        try {
+            const usos = await code1804.goyenaQueCita(goyena, n);
+            if (!usos.length) return `GARCÍA GOYENA: no se ha leído ninguna remisión al art. ${n} del Code en el OCR (puede haberlas mal leídas).`;
+            let mapa;
+            try {
+                mapa = await mapaProyectoCc();
+            } catch {
+                mapa = null;
+            }
+            return (
+                `GARCÍA GOYENA lo da como fuente de ${usos.length === 1 ? "un artículo" : `${usos.length} artículos`} del Proyecto de 1851:\n` +
+                usos
+                    .map((u) => {
+                        const cc = mapa?.get(u.proyecto)?.map((x) => `${x.articulo} (semejanza ${x.puntuacion})`).join(", ");
+                        return `  – Proyecto art. ${u.proyecto}${u.inferido ? " (número deducido)" : ""} (T. ${u.tomo})${cc ? ` → ${cc}` : mapa ? " → sin artículo del Código claramente correspondiente" : ""}\n    «${u.original}»`;
+                    })
+                    .join("\n") +
+                "\n  Remisiones leídas en el OCR: comprueba que el texto del Code corresponde."
+            );
+        } catch (e) {
+            return `GARCÍA GOYENA: no disponible (${e instanceof Error ? e.message : e}).`;
+        }
+    }
+
+    server.registerTool(
+        "code_articulo",
+        {
+            title: "Artículo del Code civil de 1804",
+            description:
+                "Texto original de un artículo del Code civil des Français de 1804 (Code Napoléon), con el Livre, Titre y Chapitre en que está y el enlace a la transcripción de Wikisource. Dice además qué artículos del Proyecto de 1851 lo toman como fuente según García Goyena y el artículo del Código Civil que corresponde a cada uno.",
+            inputSchema: { numero: z.number().int().min(1).max(2281), goyena: z.boolean().default(true).describe("Añadir las remisiones de García Goyena a este artículo (la primera vez recorre todo Goyena y tarda)") },
+        },
+        safe(async ({ numero, goyena: conGoyena }) => {
+            const a = await code1804.articulo(numero);
+            const ctx = code1804.describirContexto(a.contexto);
+            const out = [
+                CAB_CODE(),
+                `TRANSCRIPCIÓN: ${a.url}`,
+                `CODE CIVIL (1804), art. ${numero}${ctx ? `\nUBICACIÓN: ${ctx}` : ""}`,
+                "TEXTO (francés, redacción de 1804):",
+                "────────────────────────────────────────",
+                a.texto,
+            ];
+            if (conGoyena) out.push("", await bloqueGoyenaCode(numero));
+            return out.join("\n");
+        }),
+    );
+
+    server.registerTool(
+        "code_buscar",
+        {
+            title: "Buscar en el Code civil de 1804",
+            description: "Busca palabras en francés en el texto del Code civil de 1804 («propriété du sol», «enfant conçu», «même événement»). Devuelve los artículos con un fragmento.",
+            inputSchema: { consulta: z.string(), limite: z.number().int().min(1).max(50).default(10) },
+        },
+        safe(async ({ consulta, limite }) => {
+            const { total, resultados } = await code1804.buscar(consulta, limite);
+            if (!total) return `Sin resultados para «${consulta}» en el Code de 1804 (busca en francés de la época: «loix», «enfans» también aparecen).`;
+            return (
+                `${total} artículos del Code de 1804 contienen «${consulta}»${total > resultados.length ? ` (se muestran ${resultados.length})` : ""}:\n\n` +
+                resultados.map((a) => `• art. ${a.n}${a.contexto?.titre ? ` · ${a.contexto.titre}` : ""}\n  ${a.texto.replace(/\s+/g, " ").slice(0, 300)}${a.texto.length > 300 ? "…" : ""}`).join("\n\n")
+            );
+        }),
+    );
+
+    server.registerTool(
+        "code_para_cc",
+        {
+            title: "Del Código Civil al Code de 1804",
+            description:
+                "Para un artículo del Código Civil busca su precedente en el Proyecto de 1851 (García Goyena, por semejanza con la redacción de 1889) y lee en el comentario de Goyena los artículos del Code civil de 1804 de los que dice tomarlo («tomado de los 319 y 320 Franceses»), con su texto francés. Las remisiones salen del OCR y hay que comprobarlas.",
+            inputSchema: { articulo: articuloArg, textos: z.boolean().default(true).describe("Incluir el texto francés de cada artículo del Code") },
+        },
+        safe(async ({ articulo, textos }) => {
+            const c = await cargarArticulo(articulo);
+            const original = c.bloque.versiones[0];
+            if (original.id_norma !== boe.CC_ID) return `El ${boe.etiqueta(c.a)} no existía en 1889 (lo introdujo ${boe.describirNorma(original.id_norma, c.nombres)}): no tiene precedente en el Proyecto de 1851 ni, por esa vía, en el Code.`;
+            const cands = (await goyena.candidatosParaTexto(original.texto, 3)).filter((x) => x.puntuacion >= 0.25);
+            if (!cands.length) return `No hay un artículo del Proyecto de 1851 suficientemente parecido al ${boe.etiqueta(c.a)} (semejanza < 0,25): sin esa pasarela no se puede leer en Goyena su fuente francesa. Prueba code_buscar con palabras del artículo en francés.`;
+            const out = [`${boe.etiqueta(c.a).toUpperCase()} → PROYECTO DE 1851 → CODE CIVIL DE 1804`, `Redacción de 1889: ${original.texto.replace(/^Artículo [^\n]*\n/, "").replace(/\s+/g, " ").slice(0, 400)}`];
+            for (const cand of cands.slice(0, 2)) {
+                const { tomo, idx, exacto } = await goyena.articuloProyecto(cand.n);
+                out.push("", `■ Proyecto art. ${cand.n} (semejanza ${cand.puntuacion}${cand.puntuacion >= 0.5 ? ", probable" : ", dudosa"}) · García Goyena T. ${cand.tomo}, ${cand.paginaTexto} · ${cand.url}`);
+                if (!exacto) {
+                    out.push(`  La cabecera del art. ${cand.n} no se lee en el OCR; consulta goyena_articulo(${cand.n}).`);
+                    continue;
+                }
+                const fr = code1804.citasFrancesasDe(tomo, idx, goyena.textoArticulo);
+                if (!fr.length) {
+                    out.push("  Goyena no remite al Code en este artículo (o la remisión no se lee en el OCR).");
+                    continue;
+                }
+                out.push(`  Goyena lo da como tomado de: ${[...new Set(fr.map((x) => x.original))].map((o) => `«${o}»`).join("; ")}`);
+                for (const { n } of fr) {
+                    if (!textos) {
+                        out.push(`  – Code art. ${n}`);
+                        continue;
+                    }
+                    try {
+                        const a = await code1804.articulo(n);
+                        out.push(`  – Code art. ${n}${a.contexto?.titre ? ` (${a.contexto.titre})` : ""}: ${a.texto.replace(/\s+/g, " ").slice(0, 600)}`);
+                    } catch (e) {
+                        out.push(`  – Code art. ${n}: ${e instanceof Error ? e.message : e}`);
+                    }
+                }
+            }
+            out.push("", `[${CAB_CODE()}. Las remisiones de Goyena salen del OCR: si el texto francés no corresponde, el número puede estar mal leído (520 por 320); mira el escaneo de Goyena.]`);
+            return out.join("\n");
+        }),
+    );
+
+    // ───────────────────────── Manresa, Comentarios (1890 y ss.) ─────────────────────────
+
+    server.registerTool(
+        "manresa_articulo",
+        {
+            title: "Manresa: comentario a un artículo del Código Civil",
+            description:
+                "Texto OCR del comentario de José María Manresa y Navarro (Comentarios al Código Civil español, 1890 y ss.) a un artículo del Código Civil, con tomo, edición, año, página y enlace al escaneo de archive.org. Se usa el ejemplar más antiguo digitalizado de cada tomo (normalmente la 1.ª edición). Los comentarios son largos: usa offset para seguir leyendo.",
+            inputSchema: { articulo: articuloArg, offset, max_caracteres: z.number().int().min(1000).max(60000).default(12000) },
+        },
+        safe(async ({ articulo, offset, max_caracteres }) => {
+            const a = boe.normalizaArticulo(articulo);
+            if (a.sufijo) return `El ${boe.etiqueta(a)} es posterior a Manresa: los artículos bis y ter se introdujeron en reformas del siglo XX y no tienen comentario en su obra.`;
+            const r = await manresa.comentario(a.numero);
+            const e = r.entrada;
+            const ns = e.ns.length > 1 ? `arts. ${e.ns.join(", ")}` : `art. ${e.ns[0]}`;
+            const cab = [
+                `FUENTE: ${manresa.OBRA}. Ejemplar en archive.org (dominio público).`,
+                `TOMO: ${r.tomo.tomo} (${r.tomo.ident}) · ${manresa.describirEdicion(r.tomo)} · PÁGINAS: ${manresa.paginasDe(r.tomo, r.paginas.desde, r.paginas.hasta)}`,
+                `ESCANEO: ${manresa.urlDe(r.tomo, r.paginas.desde)}`,
+                r.exacto
+                    ? `COMENTARIO AL ${ns.toUpperCase()} CC${e.ns.length > 1 ? " (Manresa los comenta juntos)" : ""}`
+                    : `AVISO: no se ha reconocido la cabecera del art. ${a.numero} en el OCR; se muestra desde el ${ns}, cuyo tramo lo contiene. Busca «${a.numero}» en el texto.`,
+                "AVISO: Manresa comenta la redacción de su época (1889 o la de la edición), no la vigente: contrástala con cc_version.",
+            ];
+            if (r.truncado) cab.push("AVISO: el tramo es muy largo y se ha cortado; sigue en el escaneo.");
+            let fuentes = "";
+            if (offset === 0) {
+                const lista = citas.extraerCitas(r.texto);
+                if (lista.length) fuentes = `\n\nFUENTES QUE CITA (leídas en el OCR; compruébalas):\n${renderCitas(lista)}`;
+            }
+            return [...cab, "TEXTO OCR (puede contener errores de lectura; compruébalo en el escaneo antes de citar):", "────────────────────────────────────────", page(r.texto, offset, max_caracteres)].join("\n") + fuentes;
+        }),
+    );
+
+    server.registerTool(
+        "manresa_buscar",
+        {
+            title: "Buscar en Manresa",
+            description: "Busca palabras en el OCR de los Comentarios de Manresa. Devuelve el tomo, el artículo comentado en esa página, un fragmento y el enlace al escaneo.",
+            inputSchema: { consulta: z.string(), tomo: z.number().int().min(1).max(12).optional(), limite: z.number().int().min(1).max(50).default(10) },
+        },
+        safe(async ({ consulta, tomo, limite }) => {
+            const { total, resultados } = await manresa.buscar(consulta, { tomo, limite });
+            if (!total) return `Sin resultados para «${consulta}» en Manresa (el OCR puede haber leído mal la palabra: prueba una forma más corta).`;
+            return (
+                `${total} páginas contienen «${consulta}»${total > resultados.length ? ` (se muestran ${resultados.length})` : ""}:\n\n` +
+                resultados
+                    .map((r) => `• T. ${r.tomo}, ${r.paginaTexto}${r.articulos ? ` · comentario al art. ${r.articulos.join(", ")}` : ""}\n  …${r.fragmento}…\n  ${r.url}`)
                     .join("\n\n")
             );
         }),

@@ -29,6 +29,8 @@ globalThis.fetch = async (url) => {
 const { createServer } = await import("./server.js");
 const goyena = await import("./goyena.js");
 const partidas = await import("./partidas.js");
+const code1804 = await import("./codigo1804.js");
+const manresa = await import("./manresa.js");
 
 let client;
 before(async () => {
@@ -52,6 +54,28 @@ before(async () => {
             paginas: ["PARTIDA VII. 120\nTITULO XV\nDe los daños que los homes facen.\nLEY IV.\nTexto de la cuarta.\nLEY V.\nTexto de la quinta.\nLEY VI.\nCómo debe facer emienda el que fizo daño a otro.\nSi algunt home ficiese daño a otro por su culpa, tenudo es de facer emienda dello."],
         }),
     ]);
+    code1804._setDatos({
+        formato: 1,
+        origen: "Code civil des Français 1804/Texte entier",
+        url: "https://fr.wikisource.org/wiki/Code_civil_des_Fran%C3%A7ais_1804/Texte_entier",
+        articulos: code1804.analizar(
+            "LIVRE III. DES DIFFÉRENTES MANIÈRES DONT ON ACQUIERT LA PROPRIÉTÉ.\nTITRE IV.\nDes engagemens qui se forment sans convention.\nCHAPITRE II.\nDes délits et des quasi-délits.\nArt. 1382. Tout fait quelconque de l'homme, qui cause à autrui un dommage, oblige celui par la faute duquel il est arrivé, à le réparer.\nArt. 1383. Chacun est responsable du dommage qu'il a causé non-seulement par son fait, mais encore par sa négligence ou par son imprudence.",
+        ),
+    });
+    manresa._setTomos([
+        {
+            tomo: 12,
+            ident: "BRes04553412",
+            fecha: "1907",
+            editorial: "Madrid: Imprenta de la Revista de Legislación",
+            edicion: "1.ª ed.",
+            paginacion: "hojas",
+            paginas: [
+                "604 CÓDIGO CIVIL\nARTÍCULO 1902\nEl que por acción ú omisión causa daño á otro, interviniendo culpa ó negligencia, está obligado á reparar el daño causado.\nEste artículo procede de la ley Aquilia; véase la ley 1, título 2, libro 9 del Digesto.",
+                "LIB. IV—TÍT. XVI 605\nsigue el comentario sobre la culpa extracontractual.\nARTÍCULO 1903\nLa obligación que impone el artículo anterior es exigible...",
+            ],
+        },
+    ]);
     const [a, b] = InMemoryTransport.createLinkedPair();
     await createServer().connect(a);
     client = new Client({ name: "test", version: "1" });
@@ -67,7 +91,12 @@ test("lista de herramientas", async () => {
     const { tools } = await client.listTools();
     assert.deepEqual(
         tools.map((t) => t.name).sort(),
-        ["cc_comparar", "cc_concordancias", "cc_fuente_romana", "cc_historia", "cc_reformas", "cc_version", "goyena_articulo", "goyena_buscar", "goyena_citado", "goyena_citas", "goyena_para_cc", "historico_buscar", "historico_citar"],
+        [
+            "cc_brocardos", "cc_comparar", "cc_concordancias", "cc_fuente_romana", "cc_historia", "cc_reformas", "cc_version",
+            "code_articulo", "code_buscar", "code_para_cc",
+            "goyena_articulo", "goyena_buscar", "goyena_citado", "goyena_citas", "goyena_para_cc",
+            "historico_buscar", "historico_citar", "manresa_articulo", "manresa_buscar",
+        ],
     );
 });
 
@@ -157,6 +186,59 @@ test("Partidas: historico_citar e historico_buscar", async () => {
     assert.match(toro.text, /Leyes de Toro: el conector todavía no tiene su texto/);
     const b = await call("historico_buscar", { consulta: "emienda" });
     assert.match(b.text, /• P\. 7\.15\.6 ·/);
+});
+
+test("Code civil de 1804: code_articulo, code_buscar, code_para_cc", async () => {
+    const a = await call("code_articulo", { numero: 1382 });
+    assert.equal(a.error, false, a.text);
+    assert.match(a.text, /CODE CIVIL \(1804\), art\. 1382/);
+    assert.match(a.text, /UBICACIÓN: LIVRE III\. .* › TITRE IV\. Des engagemens qui se forment sans convention\. › CHAPITRE II\. Des délits/);
+    assert.match(a.text, /Tout fait quelconque de l'homme/);
+    assert.match(a.text, /Proyecto art\. 1900 \(T\. 4\) → art\. 1902 CC/);
+    assert.match(a.text, /«1382 Francés»/);
+    const b = await call("code_buscar", { consulta: "negligence" });
+    assert.match(b.text, /• art\. 1383/);
+    const p = await call("code_para_cc", { articulo: "1902" });
+    assert.equal(p.error, false, p.text);
+    assert.match(p.text, /Proyecto art\. 1900 \(semejanza/);
+    assert.match(p.text, /Code art\. 1382 \(TITRE IV\. .*\): Tout fait quelconque/);
+    const fuera = await call("code_articulo", { numero: 5 });
+    assert.equal(fuera.error, true);
+});
+
+test("Manresa: manresa_articulo y manresa_buscar", async () => {
+    const m = await call("manresa_articulo", { articulo: "1902" });
+    assert.equal(m.error, false, m.text);
+    assert.match(m.text, /TOMO: 12 \(BRes04553412\) · 1\.ª ed\., Madrid: Imprenta de la Revista de Legislación, 1907/);
+    assert.match(m.text, /COMENTARIO AL ART\. 1902 CC/);
+    assert.match(m.text, /sigue el comentario sobre la culpa/);
+    assert.doesNotMatch(m.text, /La obligación que impone/);
+    assert.match(m.text, /– D\. 9\.2\.1/);
+    assert.match(m.text, /archive\.org\/details\/BRes04553412\/page\/n0/);
+    const bis = await call("manresa_articulo", { articulo: "94 bis" });
+    assert.match(bis.text, /posterior a Manresa/);
+    const no = await call("manresa_articulo", { articulo: "1" });
+    assert.equal(no.error, true);
+    assert.match(no.text, /T\. 12: 1902–1903/);
+    const b = await call("manresa_buscar", { consulta: "culpa extracontractual" });
+    assert.match(b.text, /comentario al art\. 1902/);
+});
+
+test("cc_brocardos y brocardos en cc_concordancias", async () => {
+    const r = await call("cc_brocardos", { articulo: "358" });
+    assert.match(r.text, /Superficies solo cedit/);
+    assert.match(r.text, /Gai\. 2\.73/);
+    const q = await call("cc_brocardos", { consulta: "venta quita renta" });
+    assert.match(q.text, /Emptio tollit locatum/);
+    const f = await call("cc_brocardos", { fuente: "D. 50.17" });
+    assert.match(f.text, /Impossibilium nulla obligatio est/);
+    const lista = await call("cc_brocardos", {});
+    assert.match(lista.text, /Brocardos registrados \(\d+\)/);
+    const c = await call("cc_concordancias", { articulo: "116" });
+    assert.match(c.text, /BROCARDOS relacionados/);
+    assert.match(c.text, /Pater is est quem nuptiae demonstrant/);
+    const inv = await call("cc_fuente_romana", { cita: "Gai. 2.73" });
+    assert.match(inv.text, /Superficies solo cedit \(Gai\. 2\.73\) → art\. 358 CC/);
 });
 
 test("errores claros", async () => {
