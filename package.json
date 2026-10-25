@@ -1,0 +1,23 @@
+{
+  "name": "concordantiae-mcp",
+  "version": "0.1.0",
+  "description": "Servidor MCP del Código Civil español: historia de cada artículo desde 1889 (BOE), concordancias con el derecho romano y García Goyena (1852)",
+  "type": "module",
+  "main": "remote.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "scripts": {
+    "start": "node remote.js",
+    "start:stdio": "node index.js",
+    "ingest": "node ingest.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "cheerio": "^1.2.0",
+    "unpdf": "^1.9.1",
+    "zod": "^4.6.7"
+  }
+}
