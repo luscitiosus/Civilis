@@ -5,6 +5,8 @@ import { DEFAULT_MAX_CHARS, page } from "./text.js";
 import * as boe from "./boe.js";
 import * as goyena from "./goyena.js";
 import * as conc from "./concordancias.js";
+import * as citas from "./citas.js";
+import * as partidas from "./partidas.js";
 import { renderDiff } from "./diff.js";
 
 export const INSTRUCTIONS = `Concordantiae: el Código Civil español (BOE-A-1889-4763) en su historia y en sus fuentes.
@@ -12,11 +14,14 @@ export const INSTRUCTIONS = `Concordantiae: el Código Civil español (BOE-A-188
 Tres capas:
 1. Historia de cada artículo desde 1889, con la norma que dio cada redacción (API oficial del BOE): cc_historia, cc_version, cc_comparar, cc_reformas.
 2. Concordancias con el derecho romano, verificadas contra los textos críticos de la Bibliotheca Iuris Antiqui: cc_concordancias, cc_fuente_romana. Para leer el pasaje completo usa el conector de fuentes romanas (citar).
-3. García Goyena, Concordancias, motivos y comentarios del Código civil español (1852), comentario al Proyecto de 1851, en OCR de archive.org: goyena_articulo, goyena_buscar, goyena_para_cc.
+3. García Goyena, Concordancias, motivos y comentarios del Código civil español (1852), comentario al Proyecto de 1851, en OCR de archive.org: goyena_articulo, goyena_buscar, goyena_para_cc. Las fuentes que cita cada comentario (Digesto, Código, Partidas, Leyes de Toro, Fuero Juzgo, Fuero Real, Novísima) se leen en notación moderna con goyena_citas, y goyena_citado hace la búsqueda inversa hasta el Código Civil.
+4. Derecho histórico castellano: las Siete Partidas en la edición de la Real Academia de la Historia (1807), en OCR de archive.org: historico_citar, historico_buscar.
 
 Reglas:
 - Cita el texto literal que devuelven las herramientas, con la fecha de vigencia y la URL. No completes con memoria lo que no se ha leído.
 - Las concordancias romanas son un conjunto seleccionado, no exhaustivo: si un artículo no tiene entrada, dilo y no inventes una.
+- Las citas que se extraen de García Goyena salen del OCR: un número mal leído da una cita equivocada. Compruébalas leyendo el pasaje (citar en el conector romano, historico_citar para las Partidas).
+- La numeración de las Partidas es la de la edición de 1807, que puede no coincidir con la de Gregorio López (1555), la que tenía autoridad en el foro y la que probablemente sigue García Goyena: si una cita de Goyena no cuadra con el texto, puede deberse a eso.
 - El texto de García Goyena es OCR del siglo XIX con errores; la correspondencia entre artículos del Proyecto de 1851 y del Código de 1889 que ofrece goyena_para_cc es por semejanza textual y debe comprobarse en el escaneo enlazado.`;
 
 const ok = (text) => ({ content: [{ type: "text", text }] });
@@ -229,7 +234,7 @@ export function createServer() {
             inputSchema: {
                 articulo: articuloArg.optional(),
                 consulta: z.string().optional().describe('Palabras de la materia o institución: "usufructo", "lex Aquilia", "tesoro"'),
-                goyena: z.boolean().default(false).describe("Añadir candidatos del Proyecto de 1851 (García Goyena)"),
+                goyena: z.boolean().default(false).describe("Añadir los candidatos del Proyecto de 1851 (García Goyena) y las fuentes que cita su comentario. Si el artículo no tiene concordancias registradas, las fuentes citadas por Goyena se añaden siempre."),
             },
         },
         safe(async ({ articulo, consulta, goyena: conGoyena }) => {
@@ -246,6 +251,7 @@ export function createServer() {
                         : `No hay concordancias romanas registradas para el ${boe.etiqueta(boe.normalizaArticulo(articulo))}. El conjunto es selectivo (${conc.DATOS.entradas.length} artículos); no supongas que no existen. Prueba con una consulta por materia o busca en las fuentes con el conector romano.`,
                 );
                 if (conGoyena) out.push(await bloqueGoyena(articulo));
+                if (conGoyena || !es.length) out.push(await bloqueCitasGoyena(articulo));
             }
             if (consulta) {
                 const es = conc.porTexto(consulta);
@@ -261,13 +267,19 @@ export function createServer() {
         {
             title: "Qué artículos del Código Civil remontan a un lugar romano",
             description:
-                'Búsqueda inversa: dado un lugar de las fuentes ("D. 9.2", "I. 2.1", "Gai. 3.88", "C. 8.34.3"), devuelve los artículos del Código Civil concordados con él o con cualquier lugar dentro de él.',
+                'Búsqueda inversa: dado un lugar de las fuentes ("D. 9.2", "I. 2.1", "Gai. 3.88", "C. 8.34.3"), devuelve los artículos del Código Civil concordados con él o con cualquier lugar dentro de él, y además los comentarios de García Goyena que lo citan, con el artículo del Código que corresponde a cada uno.',
             inputSchema: { cita: z.string() },
         },
         safe(async ({ cita }) => {
             const r = conc.porFuente(cita);
-            if (!r.length) return `Ningún artículo del conjunto de concordancias remite a ${cita}. El conjunto es selectivo; no significa que no haya relación.`;
-            return r.map(({ entrada, fuente }) => `art. ${entrada.articulo} CC · ${entrada.materia} — ${fuente.cita} (${entrada.relacion})`).join("\n");
+            const out = [
+                r.length
+                    ? r.map(({ entrada, fuente }) => `art. ${entrada.articulo} CC · ${entrada.materia} — ${fuente.cita} (${entrada.relacion})`).join("\n")
+                    : `Ningún artículo del conjunto de concordancias remite a ${cita}. El conjunto es selectivo; no significa que no haya relación.`,
+            ];
+            const ref = citas.normalizaReferencia(cita);
+            if (ref && citas.ROMANAS.has(ref.fuente)) out.push(await bloqueCitado(ref.ref, 15));
+            return out.join("\n\n");
         }),
     );
 
@@ -362,6 +374,207 @@ export function createServer() {
             inputSchema: { articulo: articuloArg },
         },
         safe(async ({ articulo }) => bloqueGoyena(articulo)),
+    );
+
+    // ───────────────────────── Fuentes citadas por García Goyena ─────────────────────────
+
+    const AVISO_CITAS = "Citas leídas en el OCR: un número mal leído da una cita equivocada; comprueba cada una leyendo el pasaje.";
+
+    /** Cómo leer cada tipo de fuente desde aquí o desde otro conector. */
+    function comoLeer(fuente, ref) {
+        if (citas.ROMANAS.has(fuente)) return `citar("${ref}") en el conector de fuentes romanas`;
+        if (fuente === "P") return `historico_citar("${ref}")`;
+        return "sin texto en este conector";
+    }
+
+    /** Lista de citas agrupada por obra. */
+    function renderCitas(lista) {
+        const porObra = new Map();
+        for (const c of lista) {
+            if (!porObra.has(c.fuente)) porObra.set(c.fuente, []);
+            porObra.get(c.fuente).push(c);
+        }
+        const orden = ["D", "C", "I", "P", "Toro", "FJ", "FR", "Nov", "Nueva", "NovNav"];
+        return orden
+            .filter((f) => porObra.has(f))
+            .map((f) => {
+                const cs = porObra.get(f);
+                return `  ${citas.NOMBRE[f]} (${comoLeer(f, cs[0].ref).replace(/"[^"]*"/, '"…"')}):\n` + cs.map((c) => `    – ${c.ref}  ← «${c.original}»`).join("\n");
+            })
+            .join("\n");
+    }
+
+    /** Fuentes citadas en el comentario de Goyena al artículo del Proyecto que corresponde a uno del CC. */
+    async function bloqueCitasGoyena(articulo) {
+        try {
+            const c = await cargarArticulo(articulo);
+            const original = c.bloque.versiones[0];
+            if (original.id_norma !== boe.CC_ID) return `FUENTES CITADAS POR GARCÍA GOYENA: el ${boe.etiqueta(c.a)} no existía en 1889; no tiene precedente en el Proyecto de 1851.`;
+            const [cand] = await goyena.candidatosParaTexto(original.texto, 1);
+            if (!cand || cand.puntuacion < 0.25)
+                return `FUENTES CITADAS POR GARCÍA GOYENA: no hay un artículo del Proyecto de 1851 parecido al ${boe.etiqueta(c.a)}${cand ? ` (el más cercano, el ${cand.n}, solo llega a ${cand.puntuacion})` : ""}.`;
+            const { tomo, idx, exacto } = await goyena.articuloProyecto(cand.n);
+            if (!exacto) return `FUENTES CITADAS POR GARCÍA GOYENA: el art. ${cand.n} del Proyecto no tiene cabecera legible en el OCR; consulta goyena_articulo(${cand.n}).`;
+            const lista = goyena.citasDe(tomo, idx);
+            const cab = `FUENTES CITADAS POR GARCÍA GOYENA en el texto y comentario del art. ${cand.n} del Proyecto de 1851 (semejanza con el ${boe.etiqueta(c.a)}: ${cand.puntuacion}${cand.puntuacion >= 0.5 ? ", probable" : ", dudosa: comprueba que es el precedente"}).`;
+            if (!lista.length) return `${cab}\n  No se ha reconocido ninguna cita en el OCR de ese comentario (puede haberlas mal leídas: goyena_articulo(${cand.n})).`;
+            return `${cab}\n${AVISO_CITAS}\n${renderCitas(lista)}`;
+        } catch (e) {
+            return `FUENTES CITADAS POR GARCÍA GOYENA: no disponible (${e instanceof Error ? e.message : e}).`;
+        }
+    }
+
+    // Proyecto de 1851 → Código de 1889: el artículo del Código cuya redacción original se parece
+    // más (≥ 0,5). Necesita el Código entero del BOE: la primera vez tarda.
+    let mapaPC;
+    async function mapaProyectoCc() {
+        if (mapaPC) return mapaPC;
+        const { bloques } = await boe.textoCompleto();
+        const mapa = new Map();
+        for (const b of bloques) {
+            const art = boe.parseTituloArticulo(b.titulo);
+            const v0 = b.versiones[0];
+            if (!art || art.rango || v0?.id_norma !== boe.CC_ID) continue;
+            const [cand] = await goyena.candidatosParaTexto(v0.texto, 1);
+            if (!cand || cand.puntuacion < 0.5) continue;
+            if (!mapa.has(cand.n)) mapa.set(cand.n, []);
+            mapa.get(cand.n).push({ articulo: boe.etiqueta({ numero: art.desde, sufijo: art.sufijo }), puntuacion: cand.puntuacion });
+        }
+        mapaPC = mapa;
+        return mapa;
+    }
+
+    /** Comentarios de Goyena que citan `ref` y el artículo del Código que corresponde a cada uno. */
+    async function bloqueCitado(ref, limite = 30) {
+        try {
+            const usos = await goyena.articulosQueCitan(ref);
+            if (!usos.length) return `GARCÍA GOYENA: ningún comentario cita ${ref} (en lo que se ha podido leer del OCR).`;
+            let mapa;
+            try {
+                mapa = await mapaProyectoCc();
+            } catch {
+                mapa = null;
+            }
+            const lineas = usos.slice(0, limite).map((u) => {
+                const cc = mapa?.get(u.n)?.map((x) => `${x.articulo} (semejanza ${x.puntuacion})`).join(", ");
+                return `  – ${u.ref} · comentario al art. ${u.n} del Proyecto${u.inferido ? " (número deducido)" : ""} (T. ${u.tomo})${cc ? ` → ${cc}` : mapa ? " → sin artículo del Código claramente correspondiente" : ""}\n    «${u.original}»`;
+            });
+            return (
+                `GARCÍA GOYENA cita ${ref} en ${usos.length} lugar${usos.length === 1 ? "" : "es"}${usos.length > limite ? ` (se muestran ${limite})` : ""}:\n` +
+                lineas.join("\n") +
+                `\n${AVISO_CITAS}` +
+                (mapa ? "" : "\n(No se ha podido cargar el Código completo del BOE para enlazar con sus artículos.)")
+            );
+        } catch (e) {
+            return `GARCÍA GOYENA: no disponible (${e instanceof Error ? e.message : e}).`;
+        }
+    }
+
+    server.registerTool(
+        "goyena_citas",
+        {
+            title: "Fuentes que cita García Goyena en un artículo del Proyecto",
+            description:
+                "Lee el texto y comentario de un artículo del Proyecto de 1851 en García Goyena y devuelve, en notación moderna, las fuentes que cita: Digesto, Código e Instituciones de Justiniano (D. 1.5.14, C. 6.29.3), Partidas (P. 4.23.5), Leyes de Toro (Toro 13), Fuero Juzgo (FJ 4.2.17), Fuero Real (FR 3.5.5) y Novísima Recopilación (Nov. Rec. 10.5.2), con el fragmento del OCR de donde sale cada una. Para pasar de un artículo del Código Civil al del Proyecto usa goyena_para_cc; cc_concordancias con goyena=true lo hace todo junto.",
+            inputSchema: { numero: z.number().int().min(1).max(1992) },
+        },
+        safe(async ({ numero }) => {
+            const { tomo, idx, exacto, antesDe } = await goyena.articuloProyecto(numero);
+            if (!exacto) {
+                throw new SourceError(
+                    antesDe != null
+                        ? `No se ha reconocido la cabecera del art. ${numero} del Proyecto (el primero reconocido del tomo es el ${antesDe}); léelo con goyena_articulo(${numero}).`
+                        : `La cabecera del art. ${numero} del Proyecto es ilegible en el OCR; léelo con goyena_articulo(${numero}) y busca las citas a mano.`,
+                );
+            }
+            const lista = goyena.citasDe(tomo, idx);
+            const a = tomo.articulos[idx];
+            const cab = `GARCÍA GOYENA · Proyecto de 1851, art. ${numero}${a.inferido ? " (número deducido por la secuencia)" : ""} · T. ${tomo.tomo}, ${goyena.describirPaginas(tomo, a.pagina, a.pagina)}\nESCANEO: ${goyena.urlPagina(tomo, a.pagina)}`;
+            if (!lista.length) return `${cab}\nNo se ha reconocido ninguna cita en el OCR de este artículo. Puede haberlas mal leídas: compruébalo con goyena_articulo(${numero}).`;
+            return `${cab}\nFUENTES CITADAS (${lista.length}):\n${renderCitas(lista)}\n${AVISO_CITAS}`;
+        }),
+    );
+
+    server.registerTool(
+        "goyena_citado",
+        {
+            title: "Qué comentarios de García Goyena citan una fuente",
+            description:
+                'Búsqueda inversa: dado un lugar del Digesto, del Código o de las Instituciones de Justiniano, de las Partidas o de las Leyes de Toro ("D. 1.5", "C. 6.29.3", "P. 4.23", "Partida 4, título 23, ley 5", "Toro 13", también "FJ 4.2.17" o "Nov. Rec. 10.5.2"), devuelve los artículos del Proyecto de 1851 cuyo comentario lo cita y el artículo del Código Civil que corresponde a cada uno (por semejanza ≥ 0,5). Admite un título entero («D. 1.5», «P. 4.23»). La primera consulta descarga el Código completo del BOE y tarda.',
+            inputSchema: { cita: z.string() },
+        },
+        safe(async ({ cita }) => {
+            const ref = citas.normalizaReferencia(cita);
+            if (!ref) throw new SourceError(`No entiendo la cita «${cita}». Ejemplos: "D. 1.5.14", "C. 6.29", "P. 4.23.5", "Partida 4, título 23, ley 5", "Toro 13", "FJ 4.2.17".`);
+            return bloqueCitado(ref.ref);
+        }),
+    );
+
+    // ───────────────────────── Derecho histórico: Partidas ─────────────────────────
+
+    server.registerTool(
+        "historico_citar",
+        {
+            title: "Ley de las Partidas",
+            description:
+                'Texto OCR de una ley de las Siete Partidas en la edición de la Real Academia de la Historia (1807), con su rúbrica y enlace a la página escaneada: "P. 4.23.5", "Partida 4, título 23, ley 5" o "4.23.5". Dice además qué comentarios de García Goyena la citan. La numeración es la de 1807, que puede no coincidir con la de Gregorio López (1555). Las Leyes de Toro, el Fuero Juzgo, el Fuero Real y la Novísima aún no tienen texto en el conector.',
+            inputSchema: {
+                referencia: z.string(),
+                max_caracteres: z.number().int().min(1000).max(40000).default(8000),
+            },
+        },
+        safe(async ({ referencia, max_caracteres }) => {
+            const ref = citas.normalizaReferencia(referencia);
+            if (!ref) throw new SourceError(`No entiendo la referencia «${referencia}». Ejemplos: "P. 4.23.5", "Partida 4, título 23, ley 5".`);
+            if (ref.fuente !== "P") {
+                throw new SourceError(`${citas.NOMBRE[ref.fuente] ?? ref.fuente}: el conector todavía no tiene su texto (solo las Partidas). Puedes ver qué comentarios de García Goyena lo citan con goyena_citado("${ref.ref}").`);
+            }
+            const [p, t, l] = ref.ref.replace(/^P\. /, "").split(".").map(Number);
+            if (!l) throw new SourceError(`Indica la ley: "P. ${p}.${t}.1", "P. ${p}.${t}.2"…`);
+            const r = await partidas.ley(p, t, l, max_caracteres);
+            const e = r.entrada;
+            const cab = [
+                `FUENTE: ${partidas.EDICION}.`,
+                `TOMO: ${r.tomo.tomo} (${r.tomo.ident}) · PÁGINAS: ${r.paginaTexto}`,
+                `ESCANEO: ${r.url}`,
+                `PARTIDA ${partidas.aRomano(p)}, TÍTULO ${partidas.aRomano(t)}${r.titulo?.rubrica ? ` — ${r.titulo.rubrica}` : ""}`,
+                r.exacto
+                    ? `LEY ${partidas.aRomano(l)} (${ref.ref})${e.rubrica ? ` — ${e.rubrica}` : ""}`
+                    : `AVISO: no se ha reconocido la cabecera de la ley ${partidas.aRomano(l)} en el OCR (el título tiene al menos ${r.leyesDelTitulo} leyes reconocidas). Se muestra desde ${e.l ? `la ley ${partidas.aRomano(e.l)}` : "el comienzo del título"}, cuyo tramo la contiene: busca «LEY ${partidas.aRomano(l)}» en el texto.`,
+                "NUMERACIÓN: la de la edición de 1807, que puede no coincidir con la de Gregorio López (1555), la que tenía autoridad en el foro y la que probablemente sigue García Goyena.",
+            ];
+            let citadaPor = "";
+            try {
+                const usos = await goyena.articulosQueCitan(ref.ref);
+                if (usos.length) citadaPor = `\nCITADA POR GARCÍA GOYENA en el comentario a${usos.length === 1 ? "l art." : " los arts."} ${[...new Set(usos.map((u) => u.n))].join(", ")} del Proyecto de 1851 (goyena_citado("${ref.ref}") da el artículo del Código).`;
+            } catch {
+                /* Goyena no disponible: se omite. */
+            }
+            return [...cab, "TEXTO OCR (puede contener errores de lectura; compruébalo en el escaneo antes de citar):", "────────────────────────────────────────", r.texto].join("\n") + citadaPor;
+        }),
+    );
+
+    server.registerTool(
+        "historico_buscar",
+        {
+            title: "Buscar en las Partidas",
+            description: "Busca palabras en el OCR de las Siete Partidas (edición de 1807). Devuelve la ley en que cae cada resultado, un fragmento y el enlace al escaneo. La ortografía es la medieval: «fijo», «home», «muger», «facer».",
+            inputSchema: {
+                consulta: z.string(),
+                partida: z.number().int().min(1).max(7).optional(),
+                limite: z.number().int().min(1).max(50).default(10),
+            },
+        },
+        safe(async ({ consulta, partida, limite }) => {
+            const { total, resultados } = await partidas.buscar(consulta, { partida, limite });
+            if (!total) return `Sin resultados para «${consulta}» en las Partidas (prueba la grafía medieval o una forma más corta: el OCR puede haber leído mal la palabra).`;
+            return (
+                `${total} páginas contienen «${consulta}»${partida ? ` en la Partida ${partida}` : ""}:\n\n` +
+                resultados
+                    .map((r) => `• ${r.donde ? (r.donde.l ? `P. ${r.donde.p}.${r.donde.t}.${r.donde.l}` : `P. ${r.donde.p}.${r.donde.t} (antes de su primera ley)`) : `T. ${r.tomo}, antes del primer título reconocido`} · ${r.paginaTexto}\n  …${r.fragmento}…\n  ${r.url}`)
+                    .join("\n\n")
+            );
+        }),
     );
 
     return server;

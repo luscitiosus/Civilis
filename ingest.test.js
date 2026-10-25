@@ -78,3 +78,27 @@ test("los ficheros del formato anterior se vuelven a descargar", async () => {
     assert.match(resumen[0], /Tomo 1: 4 páginas/);
     assert.equal(leer().formato, goyena.FORMATO);
 });
+
+test("Partidas: djvu.txt sin \\f, paginado por las cabeceras «PARTIDA IV.»", async () => {
+    const partidas = await import("./partidas.js");
+    const txt = [
+        "PARTIDA QUARTA.\nTITULO I\nDe los desposorios.\nLEY I.\nQué cosa es desposorio.",
+        "2 PARTIDA IV.\nLEY II.\nEn quántas maneras se facen.",
+        "PARTIDA IV. 3\nTITULO II\nDe los casamientos.\nLEY I.\nQué cosa es casamiento.",
+    ].join("\n");
+    globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/metadata/BRes002052"))
+            return new Response(JSON.stringify({ metadata: { title: "Las siete partidas… T. 3", imagecount: "3" }, files: [{ name: "BRes002052_djvu.txt" }] }));
+        if (u.endsWith("/download/BRes002052/BRes002052_djvu.txt")) return new Response(txt);
+        if (u.includes("advancedsearch")) return new Response(JSON.stringify({ response: { docs: [] } }));
+        return new Response("no", { status: 404 });
+    };
+    const resumen = await partidas.ingest({ log: () => {}, force: true });
+    assert.match(resumen[2], /Partidas, tomo 3: 3 páginas, 3 leyes/);
+    const d = partidas.prepararTomo(JSON.parse(readFileSync(join(process.env.CC_DATA_DIR, "partidas-3.json"), "utf-8")));
+    assert.equal(d.paginacion, "impresas");
+    assert.deepEqual(d.etiquetas, [1, 2, 3]);
+    assert.equal((await import("./goyena.js")).urlPagina(d, 2), "https://archive.org/details/BRes002052/page/2/mode/1up");
+    assert.deepEqual(d.leyes.map((x) => `${x.p}.${x.t}.${x.l}@${x.pagina}`), ["4.1.1@1", "4.1.2@2", "4.2.1@3"]);
+});

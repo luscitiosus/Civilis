@@ -13,8 +13,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gunzipSync } from "node:zlib";
-import { request, SourceError } from "./http.js";
+import { SourceError } from "./http.js";
+import { localizarTomo, paginarTomo, paginasDesdeDjvuXml, paginasDesdeHocr } from "./archive.js";
+import { contiene, extraerCitas } from "./citas.js";
+
+export { paginasDesdeDjvuXml, paginasDesdeHocr };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DATA_DIR = process.env.CC_DATA_DIR ?? join(HERE, "data");
@@ -191,41 +194,6 @@ export function indexarTomo(paginas, { desde, hasta }) {
 
 // ───────────────────────── Paginación ─────────────────────────
 
-const ENTIDADES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
-const desentidad = (s) =>
-    s.replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (m, e) =>
-        e[0] === "#" ? String.fromCodePoint(e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : Number(e.slice(1))) : ENTIDADES[e] ?? m,
-    );
-
-/**
- * Páginas a partir del hOCR de archive.org: _hocr_searchtext.txt (texto) y _hocr_pageindex.json
- * (por hoja, [inicio, fin, …] en el texto). Los desplazamientos pueden ser de caracteres o de bytes:
- * se elige la unidad cuyo total cuadra con el último fin.
- */
-export function paginasDesdeHocr(buf, indice) {
-    const texto = buf.toString("utf-8");
-    const fin = Math.max(0, ...indice.map((e) => e[1]));
-    const enBytes = Math.abs(fin - buf.length) < Math.abs(fin - texto.length);
-    return indice.map(([a, b]) => (enBytes ? buf.subarray(a, b).toString("utf-8") : texto.slice(a, b)));
-}
-
-/** Páginas a partir del _djvu.xml: un <OBJECT> por hoja, con LINE y WORD. */
-export function paginasDesdeDjvuXml(xml) {
-    const trozos = xml.split(/<OBJECT\b/i).slice(1);
-    return trozos.map((t) => {
-        let out = "";
-        let linea = [];
-        for (const m of t.matchAll(/<WORD\b[^>]*>([\s\S]*?)<\/WORD>|<\/LINE>|<\/PARAGRAPH>/gi)) {
-            if (m[1] != null) linea.push(desentidad(m[1].trim()));
-            else if (/LINE/i.test(m[0])) {
-                out += linea.join(" ") + "\n";
-                linea = [];
-            } else out += "\n";
-        }
-        if (linea.length) out += linea.join(" ") + "\n";
-        return out;
-    });
-}
 
 /** Cabecera impresa de página: «34. CONCORDANCIAS, MOTIVOS Y COMENTARIOS» / «DEL CÓDIGO CIVIL ESPAÑOL. 35». */
 const CABEZA_VERSO = /M[O0]T[I1lí]V\S*\s*Y\s*C[O0]MENT/i;
@@ -248,8 +216,8 @@ export function numeroImpreso(texto) {
  * otro a menos de cuatro páginas (el OCR confunde 3 con 5, 1 con 7…); luego se rellenan los
  * huecos por la secuencia, sin pasar de cuatro páginas desde un número aceptado.
  */
-export function etiquetasImpresas(paginas) {
-    const leidas = paginas.map(numeroImpreso);
+export function etiquetasImpresas(paginas, leer = numeroImpreso) {
+    const leidas = paginas.map(leer);
     const ok = leidas.map((r, i) => {
         if (r == null) return null;
         for (let d = -4; d <= 4; d++) if (d && leidas[i + d] != null && leidas[i + d] - r === d) return r;
@@ -287,38 +255,15 @@ export function paginasPorCabeceras(txt) {
 
 // ───────────────────────── Descarga (ingest) ─────────────────────────
 
-async function metadatosArchive(ident) {
-    const res = await request(`https://archive.org/metadata/${ident}`, { headers: { Accept: "application/json" }, noCache: true });
-    return JSON.parse(res.text());
-}
-
-/** Si un identificador no corresponde al tomo esperado, lo busca en archive.org. */
-async function buscarTomo(tomo) {
-    const q = `title:(concordancias motivos comentarios "T. ${tomo}") AND creator:(goyena)`;
-    const url = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(q)}&fl[]=identifier&fl[]=title&rows=20&output=json`;
-    const json = JSON.parse((await request(url)).text());
-    const docs = json?.response?.docs ?? [];
-    const re = new RegExp(`T\\.\\s*${tomo}\\b`);
-    return docs.find((d) => re.test(d.title ?? ""))?.identifier;
-}
-
 async function descargarTomo(t, log) {
-    let ident = t.ident;
-    let meta;
-    try {
-        meta = await metadatosArchive(ident);
-    } catch {
-        meta = undefined;
-    }
-    const titulo = meta?.metadata?.title ?? "";
-    if (!meta?.files || !new RegExp(`T\\.\\s*${t.tomo}\\b`).test(titulo)) {
-        log(`Tomo ${t.tomo}: ${ident} no coincide (${titulo || "sin metadatos"}); buscando en archive.org…`);
-        const otro = await buscarTomo(t.tomo).catch(() => undefined);
-        if (!otro) throw new SourceError(`No se ha encontrado el tomo ${t.tomo} de García Goyena en archive.org.`);
-        ident = otro;
-        meta = await metadatosArchive(ident);
-    }
-    const { paginas: brutas, paginacion, fuente } = await paginarTomo(ident, meta, log);
+    const { ident, meta } = await localizarTomo({
+        ident: t.ident,
+        re: new RegExp(`T\\.\\s*${t.tomo}\\b`),
+        q: `title:(concordancias motivos comentarios "T. ${t.tomo}") AND creator:(goyena)`,
+        etiqueta: `el tomo ${t.tomo} de García Goyena`,
+        log,
+    });
+    const { paginas: brutas, paginacion, fuente } = await paginarTomo(ident, meta, log, { porCabeceras: paginasPorCabeceras });
     const paginas = brutas.map(limpiarPagina);
     const etiquetas = etiquetasImpresas(paginas);
     const articulos = indexarTomo(paginas, t);
@@ -332,55 +277,6 @@ async function descargarTomo(t, log) {
     return { formato: FORMATO, tomo: t.tomo, ident, titulo: meta.metadata?.title ?? "", desde: t.desde, hasta: t.hasta, paginacion, fuente, paginas, etiquetas };
 }
 
-const descargar = async (ident, nombre) =>
-    (await request(`https://archive.org/download/${ident}/${encodeURIComponent(nombre)}`, { noCache: true })).body;
-const gz = (buf, nombre) => (nombre.endsWith(".gz") ? gunzipSync(buf) : buf);
-
-/**
- * Parte el OCR de un tomo en páginas, del método más fiable al menos:
- * hOCR (índice por hoja) → _djvu.xml (un OBJECT por hoja) → _djvu.txt con \f → cabeceras impresas.
- */
-async function paginarTomo(ident, meta, log) {
-    const files = (meta.files ?? []).map((f) => f.name);
-    const busca = (suf) => files.find((n) => n.endsWith(suf));
-    const hojas = Number(meta.metadata?.imagecount) || null;
-    const plausible = (n) => n > 1 && (!hojas || n >= hojas * 0.5);
-    const intentos = [
-        async () => {
-            const idx = busca("_hocr_pageindex.json.gz") ?? busca("_hocr_pageindex.json");
-            const txt = busca("_hocr_searchtext.txt.gz") ?? busca("_hocr_searchtext.txt");
-            if (!idx || !txt) return null;
-            const indice = JSON.parse(gz(await descargar(ident, idx), idx).toString("utf-8"));
-            const paginas = paginasDesdeHocr(gz(await descargar(ident, txt), txt), indice);
-            return plausible(paginas.length) ? { paginas, paginacion: "hojas", fuente: "hOCR" } : null;
-        },
-        async () => {
-            const xml = busca("_djvu.xml");
-            if (!xml) return null;
-            const paginas = paginasDesdeDjvuXml((await descargar(ident, xml)).toString("utf-8"));
-            return plausible(paginas.length) ? { paginas, paginacion: "hojas", fuente: "djvu.xml" } : null;
-        },
-        async () => {
-            const txt = busca("_djvu.txt");
-            if (!txt) return null;
-            const raw = (await descargar(ident, txt)).toString("utf-8");
-            const porFf = raw.split("\f");
-            if (plausible(porFf.length)) return { paginas: porFf, paginacion: "hojas", fuente: "djvu.txt" };
-            const porCab = paginasPorCabeceras(raw);
-            if (porCab.length > 10 || plausible(porCab.length)) return { paginas: porCab, paginacion: "impresas", fuente: "cabeceras de página del djvu.txt" };
-            return { paginas: [raw], paginacion: "ninguna", fuente: "djvu.txt sin paginar" };
-        },
-    ];
-    for (const intento of intentos) {
-        try {
-            const r = await intento();
-            if (r) return r;
-        } catch (e) {
-            log(`${ident}: ${e instanceof Error ? e.message : e}; se prueba otra fuente de páginas.`);
-        }
-    }
-    throw new SourceError(`${ident}: sin texto OCR utilizable (hOCR, _djvu.xml o _djvu.txt).`);
-}
 
 /** Lee un data/goyena-n.json si es del formato actual. */
 function leerFichero(f) {
@@ -457,6 +353,8 @@ export async function tomos() {
 
 export function _setTomos(t) {
     tomosCargados = t;
+    indiceCitas = undefined;
+    indiceSimilitud = undefined;
 }
 
 /** Texto de un artículo del Proyecto de 1851: desde su cabecera hasta la siguiente. */
@@ -623,4 +521,44 @@ export async function candidatosParaTexto(texto1889, limite = 3) {
 
 export function _resetIndice() {
     indiceSimilitud = undefined;
+}
+
+// ───────────────────────── Fuentes citadas por Goyena ─────────────────────────
+
+/** Fuentes citadas en el texto y comentario de un artículo del Proyecto (idx en tomo.articulos). */
+export function citasDe(tomo, idx) {
+    const { texto } = textoArticulo(tomo, idx, 60000);
+    return extraerCitas(texto);
+}
+
+let indiceCitas;
+
+/** ref → [{ tomo, n, original }] para todo García Goyena (se calcula una vez). */
+export async function indiceDeCitas() {
+    if (indiceCitas) return indiceCitas;
+    const ts = await tomos();
+    const mapa = new Map();
+    for (const t of ts) {
+        t.articulos.forEach((a, i) => {
+            for (const c of citasDe(t, i)) {
+                if (!mapa.has(c.ref)) mapa.set(c.ref, []);
+                mapa.get(c.ref).push({ tomo: t.tomo, n: a.n, inferido: a.inferido === true, original: c.original, fuente: c.fuente });
+            }
+        });
+    }
+    indiceCitas = mapa;
+    return mapa;
+}
+
+/** Artículos del Proyecto cuyo comentario cita `ref` o algo dentro de él («D. 9.2» abarca D. 9.2.1…). */
+export async function articulosQueCitan(ref) {
+    const mapa = await indiceDeCitas();
+    const out = [];
+    for (const [r, usos] of mapa) if (contiene(ref, r)) for (const u of usos) out.push({ ...u, ref: r });
+    out.sort((a, b) => a.n - b.n || a.ref.localeCompare(b.ref));
+    return out;
+}
+
+export function _resetCitas() {
+    indiceCitas = undefined;
 }

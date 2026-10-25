@@ -28,6 +28,7 @@ globalThis.fetch = async (url) => {
 
 const { createServer } = await import("./server.js");
 const goyena = await import("./goyena.js");
+const partidas = await import("./partidas.js");
 
 let client;
 before(async () => {
@@ -37,12 +38,20 @@ before(async () => {
         desde: 1564,
         hasta: 1992,
         paginas: [
-            "ARTICULO 1900.\nEl que ejecuta un hecho en que interviene algún género de culpa o negligencia, aunque no constituya delito, está obligado a la reparación del perjuicio causado a otro.\n1382 Francés. Ley Aquilia.",
+            "ARTICULO 1900.\nEl que por acción u omisión causa daño a otro, interviniendo culpa o negligencia, está obligado a reparar el daño causado.\n1382 Francés. Ley Aquilia, ley 1, título 2, libro 9 del Digesto; y la ley 6, título 15, Partida 7.",
             "ARTICULO 1901.\nEl dueño de un animal es responsable del daño que este cause.",
         ],
     };
     tomo.articulos = goyena.indexarTomo(tomo.paginas, tomo);
     goyena._setTomos([tomo]);
+    partidas._setTomos([
+        partidas.prepararTomo({
+            tomo: 3,
+            ident: "BRes002052",
+            partidas: [7],
+            paginas: ["PARTIDA VII. 120\nTITULO XV\nDe los daños que los homes facen.\nLEY IV.\nTexto de la cuarta.\nLEY V.\nTexto de la quinta.\nLEY VI.\nCómo debe facer emienda el que fizo daño a otro.\nSi algunt home ficiese daño a otro por su culpa, tenudo es de facer emienda dello."],
+        }),
+    ]);
     const [a, b] = InMemoryTransport.createLinkedPair();
     await createServer().connect(a);
     client = new Client({ name: "test", version: "1" });
@@ -58,7 +67,7 @@ test("lista de herramientas", async () => {
     const { tools } = await client.listTools();
     assert.deepEqual(
         tools.map((t) => t.name).sort(),
-        ["cc_comparar", "cc_concordancias", "cc_fuente_romana", "cc_historia", "cc_reformas", "cc_version", "goyena_articulo", "goyena_buscar", "goyena_para_cc"],
+        ["cc_comparar", "cc_concordancias", "cc_fuente_romana", "cc_historia", "cc_reformas", "cc_version", "goyena_articulo", "goyena_buscar", "goyena_citado", "goyena_citas", "goyena_para_cc", "historico_buscar", "historico_citar"],
     );
 });
 
@@ -118,6 +127,36 @@ test("cc_fuente_romana, goyena_articulo, goyena_buscar", async () => {
     assert.match(g.text, /PROYECTO DE 1851: art\. 1901/);
     assert.match(g.text, /archive\.org\/details\/TEST\/page\/n1/);
     assert.match((await call("goyena_buscar", { consulta: "Aquilia" })).text, /comentario al art\. 1900/);
+});
+
+test("fuentes citadas por García Goyena y búsqueda inversa", async () => {
+    const c = await call("goyena_citas", { numero: 1900 });
+    assert.match(c.text, /Digesto \(citar\("…"\)/);
+    assert.match(c.text, /– D\. 9\.2\.1  ← «ley 1, título 2, libro 9 del Digesto»/);
+    assert.match(c.text, /– P\. 7\.15\.6/);
+    const conc1902 = await call("cc_concordancias", { articulo: "1902", goyena: true });
+    assert.match(conc1902.text, /FUENTES CITADAS POR GARCÍA GOYENA en el texto y comentario del art\. 1900/);
+    const inv = await call("goyena_citado", { cita: "D. 9.2" });
+    assert.match(inv.text, /D\. 9\.2\.1 · comentario al art\. 1900 del Proyecto \(T\. 4\) → art\. 1902 CC/);
+    const fr = await call("cc_fuente_romana", { cita: "D. 9.2" });
+    assert.match(fr.text, /art\. 1902 CC · /);
+    assert.match(fr.text, /GARCÍA GOYENA cita D\. 9\.2/);
+    assert.match((await call("goyena_citado", { cita: "Toro 13" })).text, /ningún comentario cita Toro 13/);
+    assert.equal((await call("goyena_citado", { cita: "lo que sea" })).error, true);
+});
+
+test("Partidas: historico_citar e historico_buscar", async () => {
+    const l = await call("historico_citar", { referencia: "Partida 7, título 15, ley 6" });
+    assert.match(l.text, /PARTIDA VII, TÍTULO XV — De los daños que los homes facen\./);
+    assert.match(l.text, /LEY VI \(P\. 7\.15\.6\) — Cómo debe facer emienda/);
+    assert.match(l.text, /tenudo es de facer emienda/);
+    assert.match(l.text, /CITADA POR GARCÍA GOYENA en el comentario al art\. 1900/);
+    assert.match(l.text, /archive\.org\/details\/BRes002052\/page\/n0/);
+    const toro = await call("historico_citar", { referencia: "Toro 13" });
+    assert.equal(toro.error, true);
+    assert.match(toro.text, /Leyes de Toro: el conector todavía no tiene su texto/);
+    const b = await call("historico_buscar", { consulta: "emienda" });
+    assert.match(b.text, /• P\. 7\.15\.6 ·/);
 });
 
 test("errores claros", async () => {
