@@ -64,6 +64,20 @@ En el plan gratuito el servicio se duerme tras 15 minutos sin uso; la primera co
 
 `npm install`, `npm run ingest` (opcional: si no, se descarga al primer uso) y luego apunta a `node /ruta/index.js` (modo stdio). `npm test` ejecuta las pruebas.
 
+## Si la API del BOE no responde
+
+La API de datos abiertos del BOE a veces devuelve HTTP 500 durante horas (el 30/10/2026 falló para todas las normas). Las herramientas que leen el Código (`cc_historia`, `cc_version`, `cc_comparar`, `cc_reformas`, y por debajo `cc_concordancias`, `goyena_para_cc` y `code_para_cc`) siguen este orden:
+
+1. **API** (`/legislacion-consolidada/id/BOE-A-1889-4763/…`), como siempre.
+2. **Copia de respaldo** en `respaldo/`: el índice y el texto completo con todas las versiones, comprimidos (`cc-indice.json.gz`, `cc-texto.xml.gz`) y con su metadata (`cc-respaldo.json`: fecha de descarga, fecha de actualización del Código en el BOE, huellas SHA-256). Da lo mismo que la API, pero con fecha.
+3. **Página web** del texto consolidado (`https://www.boe.es/buscar/act.php?id=BOE-A-1889-4763`), que es otro servicio del BOE. Solo trae la redacción vigente (con las notas de reforma y las fechas de cada redacción, sin su texto). Por eso solo sirve para `cc_version` con `version="vigente"` y para un `cc_historia` reducido. Las demás herramientas responden con un error explicado, en vez de tomar el texto vigente por el de 1889.
+
+Cuando la respuesta no viene de la API lo dice en un `AVISO:` de la cabecera, con la fecha de la copia o la URL de la página. Tras un fallo, la API no se reintenta durante 5 minutos (`CC_API_PAUSA_MS`).
+
+**Actualizar la copia.** `npm run respaldo` la descarga y la sustituye solo si el Código ha cambiado en el BOE y la descarga está completa (al menos 1900 artículos). Si el BOE falla, conserva la copia anterior y termina con un aviso (`--estricto` para que falle). El workflow `.github/workflows/respaldo-boe.yml` lo ejecuta cada lunes y también a mano (*Actions → Copia de respaldo del Código Civil → Run workflow*), y hace commit solo si hay cambios. **La primera copia hay que generarla** lanzando el workflow a mano cuando la API responda. Render la recibe en el siguiente despliegue.
+
+Los datos del BOE se reutilizan según su [aviso legal](https://www.boe.es/informacion/aviso_legal/). Fuente: Agencia Estatal Boletín Oficial del Estado.
+
 ## Cómo se ha hecho y limitaciones
 
 - **Historia.** Sale entera del BOE: el bloque de cada artículo trae todas sus versiones desde el 16/08/1889, y las notas de cada versión («Se modifica por el art. 2 de la Ley 11/1981…  Ref. BOE-A-1981-11198») dan el nombre de la norma. Los 1976 artículos se localizan aunque el índice del BOE los titule de forma irregular («Art 32», «Art. 958 bis») o con ids que no siguen el número (el bloque del art. 94 bis se llama `a9`).
